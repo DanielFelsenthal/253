@@ -1,0 +1,153 @@
+---
+title: "hw2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+homes<-read_csv("C:\\Users\\dfels\\Downloads\\train.csv")
+head(homes)
+homes.is_na()
+```
+
+## Including Plots
+```{r}
+lm_lasso_spec <- 
+  linear_reg() %>%
+  set_args(mixture = 1, penalty = 0) %>% ## mixture = 1 indicates Lasso, we'll talk about penalty later
+  set_engine(engine = 'glmnet') %>%
+  set_mode('regression') 
+
+lasso_spec <- 
+  linear_reg() %>%
+  set_args(mixture = 1, penalty = 1) %>% ## mixture = 1 indicates Lasso, we'll talk about penalty later
+  set_engine(engine = 'glmnet') %>%
+  set_mode('regression')
+```
+
+```{r}
+drop_cols=c("misc_feature","alley","lot_frontage","garage_yr_blt","garage_type")
+homes_new=select(homes,-c("MiscFeature","Alley","LotFrontage","GarageYrBlt","GarageType","Fence","PoolQC","FireplaceQu","MasVnrArea"))
+homes_new=select(homes,c("MSSubClass","SalePrice","GarageQual","BsmtFinType2","LotArea","Street","LotShape","LandContour","OverallQual","OverallCond","YearBuilt","TotRmsAbvGrd"))
+#homes_new=replace_na(homes_new,0)
+print(map(homes_new, ~sum(is.na(.))))
+#homes_new$GarageQual
+
+
+
+
+
+
+homes_rec <- recipe( SalePrice ~ . , data = homes_new) %>%
+  #update_role(Id, new_role = "Id") %>% # we don't want to use ID as predictor
+  step_novel(all_nominal_predictors()) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_nzv(all_predictors()) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) # important step for LASSO
+
+#homes_new$GarageQual
+
+homes_new[is.na(homes_new)] = 'NoAv'
+
+#homes_new$GarageQual
+
+
+
+homes_rec %>%
+  prep(training=homes_new) %>%
+  bake(new_data=NULL)
+
+print(map(homes_rec, ~sum(is.na(.))))
+
+lasso_wf_Homes <- workflow() %>% 
+  add_recipe(homes_rec) %>%
+  add_model(lm_lasso_spec) 
+
+lasso_fit_Homes <- lasso_wf_Homes %>% 
+  fit(data = homes_new) # Fit to entire data set (for now)
+
+tidy(lasso_fit_Homes) # penalty = 0; equivalent to lm
+
+plot(lasso_fit_Homes %>% extract_fit_parsnip() %>% pluck('fit'), # way to get the original glmnet output
+     xvar = "lambda") # glmnet fits the model with a variety of lambda penalty values
+
+
+```
+
+You can also embed plots, for example:
+```{r}
+data_cv10 <- vfold_cv(homes_new, v = 10)
+
+# Lasso Model Spec with tune
+lm_lasso_spec_tune <- 
+  linear_reg() %>%
+  set_args(mixture = 1, penalty = tune()) %>% ## mixture = 1 indicates Lasso
+  set_engine(engine = 'glmnet') %>% #note we are using a different engine
+  set_mode('regression') 
+
+# Workflow (Recipe + Model)
+lasso_wf_tune <- workflow() %>% 
+  add_recipe(homes_rec) %>%
+  add_model(lm_lasso_spec_tune) 
+
+# Tune Model (trying a variety of values of Lambda penalty)
+penalty_grid <- grid_regular(
+  penalty(range = c(0, 10)), #log10 transformed 10^-5 to 10^3
+  levels = 30)
+
+tune_res <- tune_grid( # new function for tuning parameters
+  lasso_wf_tune, # workflow
+  resamples = data_cv10, # cv folds
+  metrics = metric_set(rmse, mae),
+  grid = penalty_grid # penalty grid defined above
+)
+
+# Visualize Model Evaluation Metrics from Tuning
+autoplot(tune_res) + theme_classic()
+
+# Summarize Model Evaluation Metrics (CV)
+collect_metrics(tune_res,summarize=TRUE) %>%
+  filter(.metric == 'rmse' || .metric=='mae') %>% # or choose mae
+  select(penalty, rmse = mean,std_err) 
+
+best_penalty <- select_best(tune_res, metric = 'rmse') # choose penalty value based on lowest mae or rmse
+
+# Fit Final Model
+final_wf <- finalize_workflow(lasso_wf_tune, best_penalty) # incorporates penalty value to workflow
+
+final_fit <- fit(final_wf, data = homes_new)
+
+tidy(final_fit)
+
+lasso_mod_out <- final_fit %>%
+    predict(new_data = homes_new) %>%
+    bind_cols(homes_new) %>%
+    mutate(resid = SalePrice - .pred)
+
+
+ggplot(lasso_mod_out,aes(y=abs(resid),x=YearBuilt))+geom_point()
+
+```
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Reflection:
+
+I really greatly appreciate all the work that you're doing to lighten the load on us. It's been a succession of
+difficult semesters, so everything you do means a lot. The in class work is clear and explains the material well,
+and the book is usually good, though it often goes a little over my head in the more in depth sections. If there 
+is any one area I probably need more help in, it's usually in miscellaneous R work like filling in NA values,
+or finding out where they exist. I should probably know this more in depth by now, but R is somewhat different from
+other programming languages, and I feel like I have a difficult time remembering the relative basics.
